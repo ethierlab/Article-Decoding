@@ -51,7 +51,24 @@ def _positions(n_x, n_g, cluster_width=0.82):
         offs = np.array([0.0])
     return base, offs, cluster_width
 
-def plot_median_only(ax, df, x_col, y_col, hue_col, xlabel, title, max_xticks=30):
+# ---------- normalisation VAF -> |VAF| / max(|VAF|) par décodeur ----------
+def normalize_vaf_per_decoder(df, y_col='vaf', group_col='decoder'):
+    df = df.copy()
+    df[y_col] = pd.to_numeric(df[y_col], errors='coerce')
+    df['vaf_abs'] = df[y_col].abs()
+
+    def _norm(s):
+        m = s.max()
+        if not np.isfinite(m) or m <= 0:
+            return s * np.nan
+        return s / m
+
+    df['vaf_norm'] = df.groupby(group_col)['vaf_abs'].transform(_norm)
+    df = df.replace([np.inf, -np.inf], np.nan).dropna(subset=['vaf_norm'])
+    return df
+
+def plot_median_only(ax, df, x_col, y_col, hue_col, xlabel, title,
+                     max_xticks=30, ylabel="VAF (median across muscles/folds)"):
     """Standalone figure: per-decoder medians across x (dots+line)."""
     if df is None or df.empty:
         ax.set_title(title + " (no data)")
@@ -81,17 +98,19 @@ def plot_median_only(ax, df, x_col, y_col, hue_col, xlabel, title, max_xticks=30
     ax.set_xticks(x_show)
     ax.set_xticklabels([f"{x:g}" if isinstance(x, float) else str(x) for x in x_show])
 
-    ax.set_xlim(min(x_vals)-0.1, max(x_vals)+0.5)
+    # axe X de 0 à max(X)
+    ax.set_xlim(min(x_vals), max(x_vals))
+    # axe Y normalisé 0-1
     ax.set_ylim(0, 1.05)
     ax.set_xlabel(xlabel)
-    ax.set_ylabel("VAF (median across muscles/folds)")
+    ax.set_ylabel(ylabel)
     # ax.set_title(title)
     ax.legend(title="Decoder", ncols=len(groups), frameon=False, loc="upper center",
               bbox_to_anchor=(0.5, 1.18))
 
 
-
-def plot_grouped_violins(ax, df, x_col, y_col, hue_col, xlabel, title, max_xticks=30):
+def plot_grouped_violins(ax, df, x_col, y_col, hue_col, xlabel, title,
+                         max_xticks=30, ylabel="VAF (avg across muscles)"):
     x_vals, groups, data = _gather_long(df, x_col, y_col, hue_col)
     base, offs, cwidth = _positions(len(x_vals), len(groups))
     if not x_vals or not groups:
@@ -118,7 +137,6 @@ def plot_grouped_violins(ax, df, x_col, y_col, hue_col, xlabel, title, max_xtick
         ax.scatter(pos, meds, s=18, color="black", zorder=3)
 
     # axes cosmetics
-    # tick density
     if len(x_vals) > max_xticks:
         step = int(np.ceil(len(x_vals)/max_xticks))
         show_idx = list(range(0, len(x_vals), step))
@@ -129,14 +147,16 @@ def plot_grouped_violins(ax, df, x_col, y_col, hue_col, xlabel, title, max_xtick
     ax.set_xlim(-0.8, len(x_vals)-0.2)
     ax.set_ylim(0, 1.05)
     ax.set_xlabel(xlabel)
-    ax.set_ylabel("VAF (avg across muscles)")
+    ax.set_ylabel(ylabel)
     # ax.set_title(title)
 
     # legend
     handles = [plt.Line2D([0],[0], lw=10, color=DECODER_COLORS.get(g, f"C{i}")) for i,g in enumerate(groups)]
-    ax.legend(handles, groups, title="Decoder", ncols=len(groups), frameon=False, loc="upper center", bbox_to_anchor=(0.5, 1.25))
+    ax.legend(handles, groups, title="Decoder", ncols=len(groups), frameon=False,
+              loc="upper center", bbox_to_anchor=(0.5, 1.25))
 
-def plot_grouped_boxes(ax, df, x_col, y_col, hue_col, xlabel, title, max_xticks=30):
+def plot_grouped_boxes(ax, df, x_col, y_col, hue_col, xlabel, title,
+                       max_xticks=30, ylabel="VAF (avg across muscles)"):
     x_vals, groups, data = _gather_long(df, x_col, y_col, hue_col)
     base, offs, cwidth = _positions(len(x_vals), len(groups))
     if not x_vals or not groups:
@@ -149,7 +169,6 @@ def plot_grouped_boxes(ax, df, x_col, y_col, hue_col, xlabel, title, max_xticks=
         color = DECODER_COLORS.get(g, f"C{gi}")
         arrays = [data.get((x, g), []) for x in x_vals]
 
-        # Matplotlib boxplot per-position
         bp = ax.boxplot(
             arrays, positions=pos, widths=width_b, patch_artist=True, manage_ticks=False
         )
@@ -165,13 +184,12 @@ def plot_grouped_boxes(ax, df, x_col, y_col, hue_col, xlabel, title, max_xticks=
         for med in bp["medians"]:
             med.set_color("black"); med.set_linewidth(1.2)
         for fl in bp.get("fliers", []):
-            fl.set_marker("o"); fl.set_markersize(2.5); fl.set_alpha(0.25); fl.set_markeredgecolor("black")
+            fl.set_marker("o"); fl.set_markersize(2.5)
+            fl.set_alpha(0.25); fl.set_markeredgecolor("black")
 
-        # black median dots on top (like the reference)
         meds = [np.nan if len(a)==0 else float(np.median(a)) for a in arrays]
         ax.scatter(pos, meds, s=18, color="black", zorder=3)
 
-    # axes cosmetics
     if len(x_vals) > max_xticks:
         step = int(np.ceil(len(x_vals)/max_xticks))
         show_idx = list(range(0, len(x_vals), step))
@@ -182,11 +200,12 @@ def plot_grouped_boxes(ax, df, x_col, y_col, hue_col, xlabel, title, max_xticks=
     ax.set_xlim(-0.8, len(x_vals)-0.2)
     ax.set_ylim(0, 1.05)
     ax.set_xlabel(xlabel)
-    ax.set_ylabel("VAF (avg across muscles)")
+    ax.set_ylabel(ylabel)
     # ax.set_title(title)
 
     handles = [plt.Line2D([0],[0], lw=10, color=DECODER_COLORS.get(g, f"C{i}")) for i,g in enumerate(groups)]
-    ax.legend(handles, groups, title="Decoder", ncols=len(groups), frameon=False, loc="upper center", bbox_to_anchor=(0.5, 1.25))
+    ax.legend(handles, groups, title="Decoder", ncols=len(groups), frameon=False,
+              loc="upper center", bbox_to_anchor=(0.5, 1.25))
 
 def main():
     parser = argparse.ArgumentParser(description="Pretty plots for robustness experiments")
@@ -206,14 +225,16 @@ def main():
     if df_neuron is not None and not df_neuron.empty and \
        {'decoder','removed','vaf'}.issubset(df_neuron.columns):
         dn = df_neuron[['decoder','removed','vaf']].copy()
-        dn = dn.replace([np.inf,-np.inf], np.nan).dropna()
+        dn = normalize_vaf_per_decoder(dn, y_col='vaf', group_col='decoder')
 
         # Violin
         fig, ax = plt.subplots()
         plot_grouped_violins(
-            ax, dn, x_col='removed', y_col='vaf', hue_col='decoder',
-            xlabel='# Neurons removed', title='Robustness to neuron loss (Day 0, CV Val)',
-            max_xticks=args.max_xticks
+            ax, dn, x_col='removed', y_col='vaf_norm', hue_col='decoder',
+            xlabel='# Neurons removed',
+            title='Robustness to neuron loss (Day 0, CV Val)',
+            max_xticks=args.max_xticks,
+            ylabel="Normalized VAF (avg across muscles)"
         )
         path = os.path.join(args.outdir, 'neuron_violin.png')
         fig.tight_layout(); fig.savefig(path, dpi=args.dpi); plt.close(fig)
@@ -221,9 +242,11 @@ def main():
         # Box
         fig, ax = plt.subplots()
         plot_grouped_boxes(
-            ax, dn, x_col='removed', y_col='vaf', hue_col='decoder',
-            xlabel='# Neurons removed', title='Robustness to neuron loss (Day 0, CV Val)',
-            max_xticks=args.max_xticks
+            ax, dn, x_col='removed', y_col='vaf_norm', hue_col='decoder',
+            xlabel='# Neurons removed',
+            title='Robustness to neuron loss (Day 0, CV Val)',
+            max_xticks=args.max_xticks,
+            ylabel="Normalized VAF (avg across muscles)"
         )
         path = os.path.join(args.outdir, 'neuron_box.png')
         fig.tight_layout(); fig.savefig(path, dpi=args.dpi); plt.close(fig)
@@ -237,14 +260,16 @@ def main():
        {'decoder','noise_sigma','vaf'}.issubset(df_noise.columns):
         dz = df_noise[['decoder','noise_sigma','vaf']].copy()
         dz['noise_sigma'] = pd.to_numeric(dz['noise_sigma'], errors='coerce')
-        dz = dz.replace([np.inf,-np.inf], np.nan).dropna()
+        dz = normalize_vaf_per_decoder(dz, y_col='vaf', group_col='decoder')
 
         # Violin
         fig, ax = plt.subplots()
         plot_grouped_violins(
-            ax, dz, x_col='noise_sigma', y_col='vaf', hue_col='decoder',
-            xlabel='Noise σ (spike units)', title='Robustness to noise (Day 0, CV Val)',
-            max_xticks=args.max_xticks
+            ax, dz, x_col='noise_sigma', y_col='vaf_norm', hue_col='decoder',
+            xlabel='Noise σ (spike units)',
+            title='Robustness to noise (Day 0, CV Val)',
+            max_xticks=args.max_xticks,
+            ylabel="Normalized VAF (avg across muscles)"
         )
         path = os.path.join(args.outdir, 'noise_violin.png')
         fig.tight_layout(); fig.savefig(path, dpi=args.dpi); plt.close(fig)
@@ -252,9 +277,11 @@ def main():
         # Box
         fig, ax = plt.subplots()
         plot_grouped_boxes(
-            ax, dz, x_col='noise_sigma', y_col='vaf', hue_col='decoder',
-            xlabel='Noise σ (spike units)', title='Robustness to noise (Day 0, CV Val)',
-            max_xticks=args.max_xticks
+            ax, dz, x_col='noise_sigma', y_col='vaf_norm', hue_col='decoder',
+            xlabel='Noise σ (spike units)',
+            title='Robustness to noise (Day 0, CV Val)',
+            max_xticks=args.max_xticks,
+            ylabel="Normalized VAF (avg across muscles)"
         )
         path = os.path.join(args.outdir, 'noise_box.png')
         fig.tight_layout(); fig.savefig(path, dpi=args.dpi); plt.close(fig)
@@ -263,18 +290,19 @@ def main():
     else:
         print("[INFO] Noise PKL missing or empty / wrong columns.")
 
-        # ---------- Neuron-loss MEDIAN-ONLY ----------
+    # ---------- Neuron-loss MEDIAN-ONLY ----------
     if df_neuron is not None and not df_neuron.empty and \
-    {'decoder','removed','vaf'}.issubset(df_neuron.columns):
+       {'decoder','removed','vaf'}.issubset(df_neuron.columns):
         dn = df_neuron[['decoder','removed','vaf']].copy()
-        dn = dn.replace([np.inf,-np.inf], np.nan).dropna()
+        dn = normalize_vaf_per_decoder(dn, y_col='vaf', group_col='decoder')
 
         fig, ax = plt.subplots(figsize=(14, 4.5))
         plot_median_only(
-            ax, dn, x_col='removed', y_col='vaf', hue_col='decoder',
+            ax, dn, x_col='removed', y_col='vaf_norm', hue_col='decoder',
             xlabel='# Neurons removed',
             title='Median VAF vs. # Neurons removed (Day 0, CV Val)',
-            max_xticks=args.max_xticks
+            max_xticks=args.max_xticks,
+            ylabel="Normalized VAF (median across muscles/folds)"
         )
         path = os.path.join(args.outdir, 'neuron_median.png')
         fig.tight_layout(); fig.savefig(path, dpi=args.dpi); plt.close(fig)
@@ -282,17 +310,18 @@ def main():
 
     # ---------- Noise MEDIAN-ONLY ----------
     if df_noise is not None and not df_noise.empty and \
-    {'decoder','noise_sigma','vaf'}.issubset(df_noise.columns):
+       {'decoder','noise_sigma','vaf'}.issubset(df_noise.columns):
         dz = df_noise[['decoder','noise_sigma','vaf']].copy()
         dz['noise_sigma'] = pd.to_numeric(dz['noise_sigma'], errors='coerce')
-        dz = dz.replace([np.inf,-np.inf], np.nan).dropna()
+        dz = normalize_vaf_per_decoder(dz, y_col='vaf', group_col='decoder')
 
         fig, ax = plt.subplots(figsize=(14, 4.5))
         plot_median_only(
-            ax, dz, x_col='noise_sigma', y_col='vaf', hue_col='decoder',
+            ax, dz, x_col='noise_sigma', y_col='vaf_norm', hue_col='decoder',
             xlabel='Noise σ (spike units)',
             title='Median VAF vs. Noise σ (Day 0, CV Val)',
-            max_xticks=args.max_xticks
+            max_xticks=args.max_xticks,
+            ylabel="Normalized VAF (median across muscles/folds)"
         )
         path = os.path.join(args.outdir, 'noise_median.png')
         fig.tight_layout(); fig.savefig(path, dpi=args.dpi); plt.close(fig)
